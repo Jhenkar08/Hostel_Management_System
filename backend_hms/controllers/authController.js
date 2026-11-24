@@ -1,0 +1,91 @@
+const User = require('../models/User');
+const Student = require('../models/Student');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+
+// ✅ Register Controller with field validation
+const register = async (req, res) => {
+  const { name, email, password, role } = req.body;
+console.log('Received:', req.body);
+
+  // Validate required fields
+  if (!name || !email || !password || !role) {
+    return res.status(400).json({ message: 'All fields are required' });
+  }
+
+  try {
+    // Check if user already exists
+    const existing = await User.findOne({ email });
+    if (existing) {
+      return res.status(400).json({ message: 'User already exists' });
+    }
+
+    // If role is admin, ensure there is at most one admin
+    if (role === 'admin') {
+      const existingAdmin = await User.findOne({ role: 'admin' });
+      if (existingAdmin) {
+        return res.status(400).json({ message: 'An admin already exists' });
+      }
+    }
+
+    // Hash password
+    const hashed = await bcrypt.hash(password, 10);
+
+    // Create and save new user
+    const user = new User({ name, email, password: hashed, role });
+    await user.save();
+
+    // If registering a student, create a Student document in pending state
+    if (role === 'student') {
+      const student = new Student({ user: user._id, name: name, email: email, approved: false });
+      await student.save();
+      // notify admin will be via admin polling of pending students
+    }
+
+    res.status(201).json({ message: 'User registered' });
+  } catch (err) {
+    console.error('Registration error:', err.message);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// ✅ Login Controller
+const login = async (req, res) => {
+  const { email, password } = req.body;
+
+  try {
+
+    // Check if user exists
+    const user = await User.findOne({ email });
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    // Compare passwords
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) return res.status(401).json({ message: 'Invalid credentials' });
+
+    // If student and not approved yet, deny login
+    if (user.role === 'student') {
+      const student = await Student.findOne({ user: user._id });
+      if (student && !student.approved) {
+        return res.status(403).json({ message: 'Student registration pending approval' });
+      }
+    }
+
+    // Sign JWT
+    const token = jwt.sign({ id: user._id, role: user.role }, process.env.JWT_SECRET, {
+      expiresIn: '1d',
+    });
+
+    // Return token and user info
+    res.json({ token, user: { name: user.name, role: user.role } });
+  } catch (err) {
+    console.error('Login error:', err.message);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// ✅ Export both functions
+module.exports = {
+  register,
+  login,
+};
